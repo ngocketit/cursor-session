@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	limit int
-	since string
+	limit          int
+	since          string
+	showClearCache bool
 )
 
 var (
@@ -47,6 +48,15 @@ var (
 			Foreground(lipgloss.Color("240")).
 			Italic(true)
 )
+
+// matchSessionID checks whether candidateID matches the requested queryID
+// (either an exact match or a prefix match when queryID is non-empty).
+func matchSessionID(candidateID, queryID string) bool {
+	if queryID == "" {
+		return false
+	}
+	return candidateID == queryID || strings.HasPrefix(candidateID, queryID)
+}
 
 // showCmd represents the show command
 var showCmd = &cobra.Command{
@@ -98,6 +108,15 @@ var showCmd = &cobra.Command{
 		cacheDir := filepath.Join(homeDir, ".cursor-session-cache")
 		cacheManager := internal.NewCacheManager(cacheDir)
 
+		// Clear cache if requested
+		if showClearCache {
+			if err := cacheManager.ClearCache(); err != nil {
+				internal.LogWarn("Failed to clear cache: %v", err)
+			} else {
+				internal.LogInfo("Cache cleared")
+			}
+		}
+
 		// Use appropriate cache key based on storage type
 		var cacheKey string
 		if paths.GlobalStorageExists() {
@@ -127,9 +146,9 @@ var showCmd = &cobra.Command{
 			// Verify index is for the same database (path check)
 			if index.Metadata.DatabasePath == cacheKey {
 				internal.LogDebug("Index loaded with %d sessions, searching for composer ID: %s", len(index.Sessions), sessionID)
-				// Find session by composer ID
+				// Find session by composer ID (exact match first, then prefix match)
 				for _, entry := range index.Sessions {
-					if entry.ComposerID == sessionID {
+					if matchSessionID(entry.ComposerID, sessionID) || matchSessionID(entry.ID, sessionID) {
 						internal.LogDebug("Found matching entry, loading session: %s", entry.ID)
 						session, err = cacheManager.LoadSession(entry.ID)
 						if err == nil {
@@ -150,29 +169,9 @@ var showCmd = &cobra.Command{
 		// Load from storage if not in cache
 		if session == nil {
 			internal.LogInfo("Session not in cache, reconstructing from storage...")
-			// Load data using backend
-			bubbles, err := backend.LoadBubbles()
+			targetComposer, bubbles, contexts, err := internal.LoadSingleSessionData(backend, sessionID)
 			if err != nil {
-				return fmt.Errorf("failed to load bubbles: %w", err)
-			}
-
-			composers, err := backend.LoadComposers()
-			if err != nil {
-				return fmt.Errorf("failed to load composers: %w", err)
-			}
-
-			contexts, err := backend.LoadMessageContexts()
-			if err != nil {
-				return fmt.Errorf("failed to load contexts: %w", err)
-			}
-
-			// Find the composer
-			var targetComposer *internal.RawComposer
-			for _, composer := range composers {
-				if composer.ComposerID == sessionID {
-					targetComposer = composer
-					break
-				}
+				return err
 			}
 
 			if targetComposer == nil {
@@ -375,4 +374,5 @@ func init() {
 	rootCmd.AddCommand(showCmd)
 	showCmd.Flags().IntVarP(&limit, "limit", "n", 0, "Limit number of messages to show")
 	showCmd.Flags().StringVar(&since, "since", "", "Show messages since timestamp (ISO8601)")
+	showCmd.Flags().BoolVar(&showClearCache, "clear-cache", false, "Clear the cache before running")
 }

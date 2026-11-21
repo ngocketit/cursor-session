@@ -247,3 +247,19 @@ func TestWrapText(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchSessionID(t *testing.T) {
+	fullID := "cb2e9c70-1234-5678-9abc-def012345678"
+	if !matchSessionID(fullID, "cb2e9c70") {
+		t.Errorf("expected prefix 'cb2e9c70' to match %q", fullID)
+	}
+	if !matchSessionID(fullID, fullID) {
+		t.Errorf("expected full ID %q to match itself", fullID)
+	}
+	if matchSessionID(fullID, "ffffffff") {
+		t.Errorf("expected non-matching prefix to return false")
+	}
+	if matchSessionID(fullID, "") {
+		t.Errorf("expected empty query to return false")
+	}
+}

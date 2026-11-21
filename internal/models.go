@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -53,8 +54,13 @@ type MessageContext struct {
 // ParseRawBubble parses a JSON value into a RawBubble
 func ParseRawBubble(key, value string) (*RawBubble, error) {
 	// Extract chatId and bubbleId from key: bubbleId:<chatId>:<bubbleId>
+	// Note: <bubbleId> itself can contain colons (e.g., "<uuid>/s:0" for assistant sub-steps)
 	parts := splitKey(key, "bubbleId:")
-	if len(parts) != 3 {
+	if len(parts) < 3 || parts[1] == "" {
+		return nil, fmt.Errorf("invalid bubbleId key format: %s", key)
+	}
+	bubbleIDFromKey := strings.Join(parts[2:], ":")
+	if bubbleIDFromKey == "" {
 		return nil, fmt.Errorf("invalid bubbleId key format: %s", key)
 	}
 
@@ -64,7 +70,7 @@ func ParseRawBubble(key, value string) (*RawBubble, error) {
 	}
 
 	bubble.ChatID = parts[1]
-	bubble.BubbleID = parts[2]
+	bubble.BubbleID = bubbleIDFromKey
 
 	return &bubble, nil
 }

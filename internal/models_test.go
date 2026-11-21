@@ -28,6 +28,29 @@ func TestParseRawBubble(t *testing.T) {
 	}
 }
 
+func TestParseRawBubble_SubstepBubbleIDWithColon(t *testing.T) {
+	key := "bubbleId:cb2e9c70-581b-40e8-b436-04cc0ea31e9f:21d1697a-7b62-4bd1-a153-1207efbaf156/s:1"
+	value := `{"text":"Assistant response","timestamp":2000,"type":2}`
+
+	bubble, err := ParseRawBubble(key, value)
+	if err != nil {
+		t.Fatalf("ParseRawBubble() error = %v", err)
+	}
+
+	if bubble.ChatID != "cb2e9c70-581b-40e8-b436-04cc0ea31e9f" {
+		t.Errorf("ChatID = %v, want cb2e9c70-581b-40e8-b436-04cc0ea31e9f", bubble.ChatID)
+	}
+
+	wantBubbleID := "21d1697a-7b62-4bd1-a153-1207efbaf156/s:1"
+	if bubble.BubbleID != wantBubbleID {
+		t.Errorf("BubbleID = %v, want %v", bubble.BubbleID, wantBubbleID)
+	}
+
+	if bubble.Type != 2 {
+		t.Errorf("Type = %v, want 2", bubble.Type)
+	}
+}
+
 func TestParseRawComposer(t *testing.T) {
 	key := "composerData:composer123"
 	value := `{"name":"Test Conversation","createdAt":1000}`

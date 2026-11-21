@@ -152,3 +152,22 @@ func TestPrintWarning(t *testing.T) {
 	// Test that PrintWarning doesn't panic
 	PrintWarning("Test warning message")
 }
+
+func TestShowProgressSimple_FinishesWithoutHanging(t *testing.T) {
+	ctx := context.Background()
+	done := make(chan error, 1)
+	go func() {
+		done <- showProgressSimple(ctx, "Step", func() error {
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("showProgressSimple() unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("showProgressSimple() deadlocked waiting for spinner goroutine")
+	}
+}

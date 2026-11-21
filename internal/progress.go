@@ -35,7 +35,7 @@ type ProgressStep struct {
 	Fn      func() error
 }
 
-// ShowProgress runs a spinner with a message using gum if available, otherwise simple output
+// ShowProgress runs a spinner with a message
 func ShowProgress(ctx context.Context, message string, fn func() error) error {
 	// Check if we're in a TTY
 	if !isTerminal(os.Stderr) {
@@ -44,12 +44,6 @@ func ShowProgress(ctx context.Context, message string, fn func() error) error {
 		return fn()
 	}
 
-	// Try to use gum spinner if available
-	if gumAvailable() {
-		return showProgressWithGum(ctx, message, fn)
-	}
-
-	// Fallback to simple spinner
 	return showProgressSimple(ctx, message, fn)
 }
 
@@ -66,57 +60,14 @@ func ShowProgressWithSteps(ctx context.Context, steps []ProgressStep) error {
 		return nil
 	}
 
-	// Try to use gum if available
-	if gumAvailable() {
-		return showProgressWithStepsGum(ctx, steps)
-	}
-
-	// Fallback to simple output
 	return showProgressWithStepsSimple(ctx, steps)
-}
-
-// showProgressWithGum uses gum spinner for progress
-func showProgressWithGum(ctx context.Context, message string, fn func() error) error {
-	done := make(chan error, 1)
-	spinnerDone := make(chan struct{})
-
-	// Start gum spinner
-	cmd := exec.CommandContext(ctx, "gum", "spin", "--spinner", "dot", "--", "sh", "-c", "while true; do sleep 0.1; done")
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stderr
-
-	go func() {
-		defer close(spinnerDone)
-		_ = cmd.Run() // Ignore errors, we'll handle them via context
-	}()
-
-	// Run the function
-	go func() {
-		done <- fn()
-	}()
-
-	// Wait for function or context
-	select {
-	case err := <-done:
-		_ = cmd.Process.Kill()
-		<-spinnerDone
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\r%s %s\n", errorStyle.Render("✗"), message)
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "\r%s %s\n", successStyle.Render("✓"), message)
-		return nil
-	case <-ctx.Done():
-		_ = cmd.Process.Kill()
-		<-spinnerDone
-		return ctx.Err()
-	}
 }
 
 // showProgressSimple uses a simple text-based spinner
 func showProgressSimple(ctx context.Context, message string, fn func() error) error {
 	spinnerChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	done := make(chan error, 1)
+	stopSpinner := make(chan struct{})
 	spinnerDone := make(chan struct{})
 
 	// Start spinner
@@ -128,6 +79,8 @@ func showProgressSimple(ctx context.Context, message string, fn func() error) er
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-stopSpinner:
 				return
 			case <-ticker.C:
 				char := spinnerChars[i%len(spinnerChars)]
@@ -145,6 +98,7 @@ func showProgressSimple(ctx context.Context, message string, fn func() error) er
 	// Wait for function or context
 	select {
 	case err := <-done:
+		close(stopSpinner)
 		<-spinnerDone
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\r%s %s\n", errorStyle.Render("✗"), message)
@@ -153,20 +107,10 @@ func showProgressSimple(ctx context.Context, message string, fn func() error) er
 		fmt.Fprintf(os.Stderr, "\r%s %s\n", successStyle.Render("✓"), message)
 		return nil
 	case <-ctx.Done():
+		close(stopSpinner)
 		<-spinnerDone
 		return ctx.Err()
 	}
-}
-
-// showProgressWithStepsGum uses gum for multi-step progress
-func showProgressWithStepsGum(ctx context.Context, steps []ProgressStep) error {
-	for i, step := range steps {
-		msg := fmt.Sprintf("[%d/%d] %s", i+1, len(steps), step.Message)
-		if err := showProgressWithGum(ctx, msg, step.Fn); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // showProgressWithStepsSimple uses simple output for multi-step progress

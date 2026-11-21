@@ -50,6 +50,118 @@ func (s *Storage) LoadBubbles() (map[string]*RawBubble, error) {
 	return bubbleMap, nil
 }
 
+// LoadBubblesForChat loads only the bubbles belonging to a specific composer/chat ID
+func (s *Storage) LoadBubblesForChat(chatID string) (map[string]*RawBubble, error) {
+	pattern := fmt.Sprintf("bubbleId:%s:%%", chatID)
+	pairs, err := QueryCursorDiskKV(s.db, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query bubbles for chat %s: %w", chatID, err)
+	}
+
+	bubbleMap := make(map[string]*RawBubble, len(pairs))
+	for _, pair := range pairs {
+		bubble, err := ParseRawBubble(pair.Key, pair.Value)
+		if err != nil {
+			continue
+		}
+		bubbleMap[bubble.BubbleID] = bubble
+	}
+
+	return bubbleMap, nil
+}
+
+// LoadMessageContextsForChat loads only the message contexts belonging to a specific composer/chat ID
+func (s *Storage) LoadMessageContextsForChat(chatID string) (map[string][]*MessageContext, error) {
+	pattern := fmt.Sprintf("messageRequestContext:%s:%%", chatID)
+	pairs, err := QueryCursorDiskKV(s.db, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query message contexts for chat %s: %w", chatID, err)
+	}
+
+	contextMap := make(map[string][]*MessageContext)
+	for _, pair := range pairs {
+		context, err := ParseMessageContext(pair.Key, pair.Value)
+		if err != nil {
+			continue
+		}
+		contextMap[context.ComposerID] = append(contextMap[context.ComposerID], context)
+	}
+
+	return contextMap, nil
+}
+
+// LoadComposerByPrefix loads a single composer matching the given ID or prefix directly via SQLite B-tree range scan
+func (s *Storage) LoadComposerByPrefix(idOrPrefix string) (*RawComposer, error) {
+	pattern := fmt.Sprintf("composerData:%s%%", idOrPrefix)
+	pairs, err := QueryCursorDiskKV(s.db, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query composer %s: %w", idOrPrefix, err)
+	}
+
+	for _, pair := range pairs {
+		composer, err := ParseRawComposer(pair.Key, pair.Value)
+		if err != nil {
+			continue
+		}
+		if composer.ComposerID == idOrPrefix || strings.HasPrefix(composer.ComposerID, idOrPrefix) {
+			return composer, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// LoadSingleSessionData loads a single composer (matched by exact ID or prefix) along with only its bubbles and contexts.
+func LoadSingleSessionData(backend StorageBackend, sessionIDQuery string) (*RawComposer, map[string]*RawBubble, map[string][]*MessageContext, error) {
+	// Fast path for Desktop SQLite storage: query only the matching composer, bubbles, and contexts via B-tree index
+	if desktopStorage, ok := backend.(*Storage); ok {
+		targetComposer, err := desktopStorage.LoadComposerByPrefix(sessionIDQuery)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if targetComposer == nil {
+			return nil, nil, nil, nil
+		}
+		bubbles, err := desktopStorage.LoadBubblesForChat(targetComposer.ComposerID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		contexts, err := desktopStorage.LoadMessageContextsForChat(targetComposer.ComposerID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return targetComposer, bubbles, contexts, nil
+	}
+
+	// Fallback for other backends (e.g. AgentStorage)
+	composers, err := backend.LoadComposers()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load composers: %w", err)
+	}
+
+	var targetComposer *RawComposer
+	for _, composer := range composers {
+		if composer.ComposerID == sessionIDQuery || strings.HasPrefix(composer.ComposerID, sessionIDQuery) {
+			targetComposer = composer
+			break
+		}
+	}
+	if targetComposer == nil {
+		return nil, nil, nil, nil
+	}
+
+	bubbles, err := backend.LoadBubbles()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load bubbles: %w", err)
+	}
+	contexts, err := backend.LoadMessageContexts()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load contexts: %w", err)
+	}
+
+	return targetComposer, bubbles, contexts, nil
+}
+
 // LoadComposers loads all composers from the database
 func (s *Storage) LoadComposers() ([]*RawComposer, error) {
 	pairs, err := QueryCursorDiskKV(s.db, "composerData:%")

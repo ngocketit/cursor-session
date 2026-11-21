@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -29,10 +30,23 @@ func OpenDatabase(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// QueryCursorDiskKV queries the cursorDiskKV table with a LIKE pattern
+// QueryCursorDiskKV queries the cursorDiskKV table with a LIKE pattern.
+// When the pattern is a simple prefix search (e.g. "bubbleId:%" or "bubbleId:chat1:%"),
+// it uses a B-tree index range query (key >= prefix AND key < upperBound) instead of LIKE,
+// avoiding a multi-gigabyte full table scan in SQLite.
 func QueryCursorDiskKV(db *sql.DB, pattern string) ([]KeyValuePair, error) {
-	query := "SELECT key, value FROM cursorDiskKV WHERE key LIKE ? AND value IS NOT NULL"
-	rows, err := db.Query(query, pattern)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	if prefix, upperBound, ok := prefixRangeForPattern(pattern); ok {
+		query := "SELECT key, value FROM cursorDiskKV WHERE key >= ? AND key < ? AND value IS NOT NULL"
+		rows, err = db.Query(query, prefix, upperBound)
+	} else {
+		query := "SELECT key, value FROM cursorDiskKV WHERE key LIKE ? AND value IS NOT NULL"
+		rows, err = db.Query(query, pattern)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -56,6 +70,25 @@ func QueryCursorDiskKV(db *sql.DB, pattern string) ([]KeyValuePair, error) {
 	}
 
 	return pairs, nil
+}
+
+// prefixRangeForPattern converts a simple trailing-% pattern (without other SQL LIKE wildcards)
+// into an inclusive lower bound and exclusive upper bound for B-tree index range scans.
+func prefixRangeForPattern(pattern string) (string, string, bool) {
+	if !strings.HasSuffix(pattern, "%") || len(pattern) < 2 {
+		return "", "", false
+	}
+	prefix := pattern[:len(pattern)-1]
+	// Fall back to LIKE if the prefix contains wildcard characters
+	if strings.ContainsAny(prefix, "%_") {
+		return "", "", false
+	}
+	lastByte := prefix[len(prefix)-1]
+	if lastByte == 0xFF {
+		return "", "", false
+	}
+	upperBound := prefix[:len(prefix)-1] + string(lastByte+1)
+	return prefix, upperBound, true
 }
 
 // KeyValuePair represents a key-value pair from cursorDiskKV
