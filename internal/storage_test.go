@@ -86,6 +86,43 @@ func TestStorage_LoadComposers(t *testing.T) {
 	}
 }
 
+func TestStorage_LoadComposers_ChunkedHeaders(t *testing.T) {
+	db := testutil.CreateInMemoryDB(t)
+	defer func() { _ = db.Close() }()
+
+	testutil.InsertComposer(t, db, "composerData:c1", `{"composerId":"c1","name":"Chunked","fullConversationHeadersOnly":[],"headerLog":{"chunkSize":256,"chunkCount":2,"count":3}}`)
+	testutil.InsertBubble(t, db, "composerConvHeaders:c1:000001", `[{"bubbleId":"b3","type":1}]`)
+	testutil.InsertBubble(t, db, "composerConvHeaders:c1:000000", `[{"bubbleId":"b1","type":1},{"bubbleId":"b1/s:0","type":2}]`)
+
+	storage := NewStorage(db)
+	composers, err := storage.LoadComposers()
+	if err != nil {
+		t.Fatalf("LoadComposers() error = %v", err)
+	}
+	if len(composers) != 1 {
+		t.Fatalf("LoadComposers() returned %d composers, want 1", len(composers))
+	}
+
+	want := []string{"b1", "b1/s:0", "b3"}
+	got := composers[0].FullConversationHeadersOnly
+	if len(got) != len(want) {
+		t.Fatalf("got %d headers, want %d", len(got), len(want))
+	}
+	for i, id := range want {
+		if got[i].BubbleID != id {
+			t.Errorf("header[%d] = %q, want %q", i, got[i].BubbleID, id)
+		}
+	}
+
+	single, err := storage.LoadComposerByPrefix("c1")
+	if err != nil {
+		t.Fatalf("LoadComposerByPrefix() error = %v", err)
+	}
+	if single == nil || len(single.FullConversationHeadersOnly) != 3 {
+		t.Errorf("LoadComposerByPrefix() did not load chunked headers: %+v", single)
+	}
+}
+
 func TestStorage_LoadComposers_InvalidData(t *testing.T) {
 	db := testutil.CreateInMemoryDB(t)
 	defer func() { _ = db.Close() }()

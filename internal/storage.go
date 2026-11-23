@@ -104,11 +104,43 @@ func (s *Storage) LoadComposerByPrefix(idOrPrefix string) (*RawComposer, error) 
 			continue
 		}
 		if composer.ComposerID == idOrPrefix || strings.HasPrefix(composer.ComposerID, idOrPrefix) {
+			if len(composer.FullConversationHeadersOnly) == 0 {
+				chunks, err := s.loadConvHeaderChunks(fmt.Sprintf("composerConvHeaders:%s:%%", composer.ComposerID))
+				if err != nil {
+					return nil, err
+				}
+				composer.FullConversationHeadersOnly = chunks[composer.ComposerID]
+			}
 			return composer, nil
 		}
 	}
 
 	return nil, nil
+}
+
+// loadConvHeaderChunks loads conversation headers that newer Cursor versions store outside composerData,
+// in rows keyed composerConvHeaders:<composerId>:<chunkIndex>, grouped by composer ID in chunk order.
+func (s *Storage) loadConvHeaderChunks(pattern string) (map[string][]ConversationHeader, error) {
+	pairs, err := QueryCursorDiskKV(s.db, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query conversation headers: %w", err)
+	}
+
+	headersByComposer := make(map[string][]ConversationHeader)
+	for _, pair := range pairs {
+		parts := splitKey(pair.Key, "composerConvHeaders:")
+		if len(parts) < 3 || parts[1] == "" {
+			continue
+		}
+		var chunk []ConversationHeader
+		if err := json.Unmarshal([]byte(pair.Value), &chunk); err != nil {
+			LogDebug("Failed to parse conversation header chunk %s: %v", pair.Key, err)
+			continue
+		}
+		headersByComposer[parts[1]] = append(headersByComposer[parts[1]], chunk...)
+	}
+
+	return headersByComposer, nil
 }
 
 // LoadSingleSessionData loads a single composer (matched by exact ID or prefix) along with only its bubbles and contexts.
@@ -169,12 +201,20 @@ func (s *Storage) LoadComposers() ([]*RawComposer, error) {
 		return nil, fmt.Errorf("failed to query composers: %w", err)
 	}
 
+	headerChunks, err := s.loadConvHeaderChunks("composerConvHeaders:%")
+	if err != nil {
+		return nil, err
+	}
+
 	composers := make([]*RawComposer, 0)
 	for _, pair := range pairs {
 		composer, err := ParseRawComposer(pair.Key, pair.Value)
 		if err != nil {
 			// Log error but continue
 			continue
+		}
+		if len(composer.FullConversationHeadersOnly) == 0 {
+			composer.FullConversationHeadersOnly = headerChunks[composer.ComposerID]
 		}
 		composers = append(composers, composer)
 	}
